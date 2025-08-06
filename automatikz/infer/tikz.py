@@ -16,6 +16,7 @@ from torch.cuda import current_device, is_available as has_cuda
 from transformers import TextGenerationPipeline as TGP, TextStreamer
 from transformers.utils import logging
 from transformers.utils.hub import is_remote_url
+from huggingface_hub import InferenceApi
 
 from ..util import optional_dependencies, check_output
 
@@ -166,13 +167,29 @@ class TikzGenerator:
         self,
         model,
         tokenizer,
-        temperature: float = 0.8, # based on "a systematic evaluation of large language models of code"
+        temperature: float = 0.8,  # based on "a systematic evaluation of large language models of code"
         top_p: float = 0.95,
         top_k: int = 0,
         stream: bool = False,
         expand_to_square: bool = False,
         clean_up_output: bool = True,
     ):
+        # If given a Hugging Face Inference Endpoint client, wire up HTTP generation
+        if isinstance(model, InferenceApi):
+            self._hf_inference = model
+            # no local tokenizer/pipeline or multimodal support
+            self.processor = None
+            self.expand_to_square = False
+            self.clean_up_output = True
+            # store basic generation parameters for the endpoint
+            self.default_kwargs = dict(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_length=None,  # let endpoint use its own limits
+            )
+            return
+
         self.expand_to_square = expand_to_square
         self.clean_up_output = clean_up_output
         self.processor = getattr(tokenizer, "image", None)
@@ -181,19 +198,20 @@ class TikzGenerator:
             tokenizer=getattr(tokenizer, "text", tokenizer),
             **({} if hasattr(model, "hf_device_map") else {"device": current_device() if has_cuda() else -1}),
         )
-        self.pipeline.model = torch.compile(model) # type: ignore
+        self.pipeline.model = torch.compile(model)  # type: ignore
 
         self.default_kwargs = dict(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
             num_return_sequences=1,
-            max_length=self.pipeline.tokenizer.model_max_length, # type: ignore
+            max_length=self.pipeline.tokenizer.model_max_length,  # type: ignore
             do_sample=True,
             return_full_text=False,
-            streamer=TextStreamer(self.pipeline.tokenizer, # type: ignore
+            streamer=TextStreamer(
+                self.pipeline.tokenizer,  # type: ignore
                 skip_prompt=True,
-                skip_special_tokens=True
+                skip_special_tokens=True,
             ),
         )
 
@@ -226,7 +244,13 @@ class TikzGenerator:
 
         return text
 
-    def generate(self, caption: str, snippet: str = "", image: Optional[Union[Image.Image, str]] = None, **gen_kwargs):
+    def generate(
+        self,
+        caption: str,
+        snippet: str = "",
+        image: Optional[Union[Image.Image, str]] = None,
+        **gen_kwargs,
+    ):
         """
         Generate TikZ for a given caption.
             caption: the caption
@@ -234,6 +258,28 @@ class TikzGenerator:
             image: optional input fed into CLIP, defaults to the caption (can be a Pillow Image, a URI to an image, or a caption)
             gen_kwargs: additional generation kwargs (potentially overriding the default ones)
         """
+        # If using a Hugging Face Inference Endpoint, perform an HTTP call instead of a local pipeline
+        if hasattr(self, "_hf_inference"):
+            # Call the legacy InferenceApi; request raw response to accept text/plain
+            prompt = snippet + caption
+            params = {
+                "temperature": self.default_kwargs["temperature"],
+                "top_k":       self.default_kwargs["top_k"],
+                "top_p":       self.default_kwargs["top_p"],
+            }
+            if (ml := self.default_kwargs.get("max_length")):
+                params["max_new_tokens"] = ml
+            resp = self._hf_inference(inputs=prompt, params=params, raw_response=True)
+            # HF endpoint may return plain text for text generation
+            text = getattr(resp, "text", None)
+            if text is None:
+                # fallback: attempt JSON parse
+                try:
+                    text = resp.json()[0].get("generated_text", "")
+                except Exception:
+                    text = str(resp)
+            return TikzDocument(text)
+
         model, tokenizer = self.pipeline.model, self.pipeline.tokenizer
 
         if self.processor:

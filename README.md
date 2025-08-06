@@ -61,6 +61,21 @@ if tikzdoc.has_content: # true if generated tikzcode compiles to non-empty pdf
     tikzdoc.rasterize().show() # raterize pdf to a PIL.Image and show it
     tikzdoc.save("mlp.pdf") # save the generated pdf
 ```
+
+### Using a Hugging Face Inference Endpoint
+
+Instead of a local model, you can point `load` at an HF Inference Endpoint:
+
+```python
+# load via the HF Inference API (token via env HF_TOKEN or pass token=...)
+generate = TikzGenerator(
+    *load("hf-inference://nllg/tikz-clima-13b", token="YOUR_HF_TOKEN"),
+    stream=False
+)
+tikzdoc = generate("A sample caption for endpoint-based generation.")
+tikzdoc.save("out.tex")
+```
+
 More involved examples, both for inference and training, can be found in the
 [examples](examples) folder.
 
