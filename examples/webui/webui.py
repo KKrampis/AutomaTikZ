@@ -9,6 +9,8 @@ from tempfile import NamedTemporaryFile
 from textwrap import dedent
 from typing import Optional
 
+from pathlib import Path
+
 from PIL import Image
 import fitz
 import gradio as gr
@@ -16,7 +18,8 @@ from transformers import TextIteratorStreamer
 
 from automatikz.infer import TikzDocument, TikzGenerator, load
 
-assets = files(__package__) / "assets" if __package__ else files("assets") / "."
+# Locate the `assets/` folder next to this script (for examples assets like prebuilt SVGs)
+assets = Path(__file__).parent / "assets"
 models = {
     "CLiMA-7b":  "nllg/tikz-clima-7b",
     "CLiMA-13b": "nllg/tikz-clima-13b",
